@@ -23,25 +23,26 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
+from util.logger_wb import Logger_wb
+import warnings
+from util.fid_score import InceptionV3, calculate_fretchet
+import torch
+import torchvision.transforms as transforms
+import random
 
-if __name__ == '__main__':
-    opt = TrainOptions().parse()   # get training options
-    dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
-    dataset_size = len(dataset)    # get the number of images in the dataset.
-    print('The number of training images = %d' % dataset_size)
-
-    model = create_model(opt)      # create a model given opt.model and other options
-    model.setup(opt)               # regular setup: load and print networks; create schedulers
-    visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
+def train(model, dataset_training, dataset_eval, inception_model, opt, logger):
+    
     total_iters = 0                # the total number of training iterations
+    dataset_size = len(dataset_training)    # get the number of images in the dataset.
+    model.setup(opt)               # regular setup: load and print networks; create schedulers
 
     for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):    # outer loop for different epochs; we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>
         epoch_start_time = time.time()  # timer for entire epoch
         iter_data_time = time.time()    # timer for data loading per iteration
         epoch_iter = 0                  # the number of training iterations in current epoch, reset to 0 every epoch
-        visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
+
         model.update_learning_rate()    # update learning rates in the beginning of every epoch.
-        for i, data in enumerate(dataset):  # inner loop within one epoch
+        for i, data in enumerate(dataset_training):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
             if total_iters % opt.print_freq == 0:
                 t_data = iter_start_time - iter_data_time
@@ -52,16 +53,14 @@ if __name__ == '__main__':
             model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
 
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
-                save_result = total_iters % opt.update_html_freq == 0
-                model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
+                eval(model, dataset_eval, inception_model, opt, logger)
 
             if total_iters % opt.print_freq == 0:    # print training losses and save logging information to the disk
                 losses = model.get_current_losses()
                 t_comp = (time.time() - iter_start_time) / opt.batch_size
-                visualizer.print_current_losses(epoch, epoch_iter, losses, t_comp, t_data)
+                if logger is not None: logger.print_current_losses(epoch, epoch_iter, losses, t_comp, t_data)
                 if opt.display_id > 0:
-                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
+                    if logger is not None: logger.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
 
             if total_iters % opt.save_latest_freq == 0:   # cache our latest model every <save_latest_freq> iterations
                 print('saving the latest model (epoch %d, total_iters %d)' % (epoch, total_iters))
@@ -75,3 +74,77 @@ if __name__ == '__main__':
             model.save_networks(epoch)
 
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
+
+def eval(model, dataset_eval, inception_model, opt, logger):
+    opt.phase = "eval"
+    model.eval()
+    total_visuals = []
+    for i, data in enumerate(dataset_eval):       
+        if i >= opt.num_test:  # only apply our model to opt.num_test images.
+            break
+        model.set_input(data)  # unpack data from data loader
+        model.test()           # run inference
+        visuals = model.get_current_visuals()  # get image results
+        total_visuals.append(visuals)
+    model.train()
+    opt.phase = "train"
+
+    # calculate MSE for real_b and fake_b (Note data set is paired)
+    eval_log = {}
+    if opt.input_nc == 1:
+        normalizer = transforms.Compose([transforms.Normalize((0.5,), (0.5,))])
+    else: 
+        normalizer = transforms.Compose([transforms.Normalize((0.0,0.0,0.0), (1.0,1.0,1.0))])
+    if opt.input_nc == 1:
+        images_real = normalizer(torch.squeeze(torch.stack( [visuals["real_B"].repeat(1,3,1,1) for visuals in total_visuals])))
+        images_fake = normalizer(torch.squeeze(torch.stack( [visuals['fake_B'].repeat(1,3,1,1) for visuals in total_visuals])))
+    else:
+        images_real = normalizer(torch.squeeze(torch.stack( [visuals["real_B"] for visuals in total_visuals])))
+        images_fake = normalizer(torch.squeeze(torch.stack( [visuals['fake_B'] for visuals in total_visuals]))) 
+
+
+    eval_log['FID'] = calculate_fretchet(images_real, images_fake, inception_model)
+
+    
+    if logger is not None:
+        logger.plot_current_eval(eval_log)
+        logger.display_current_results(random.choice(total_visuals))
+
+if __name__ == '__main__':
+
+    log = True
+
+    opt = TrainOptions().parse()   # get training options
+    dataset_training = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
+    print('The number of training images = %d' % len(dataset_training))
+
+    model = create_model(opt)      # create a model given opt.model and other options
+
+    # create a validation dataset given opt.dataset_mode and other options
+    
+    opt.phase = 'val'
+    dataset_eval = create_dataset(opt)      # create a dataset for evaluations
+    opt.num_test = len(dataset_eval)
+    opt.phase = 'train'
+    print('The number of eval images = %d' % len(dataset_eval))
+    # initiate  inception for calculating FID score
+    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+    inception_model = InceptionV3([block_idx])
+    inception_model=inception_model.cuda()
+
+
+
+    logger = None
+    if log:
+        logger = Logger_wb(opt) # create the wandb logger
+    else:
+        warnings.warn("Logger is of")
+        print("------------------- -------------- --------------------")
+        print("------------------- LOGGING IS OFF --------------------")
+        print("------------------- -------------- --------------------")
+    
+    train(model, dataset_training, dataset_eval, inception_model, opt, logger)
+
+    if log:
+        logger.finish()
+    
