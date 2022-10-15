@@ -14,7 +14,7 @@
             "args": [ "--dataroot", "./datasets/horse2zebra",
                 "--name", "h2z",
                 "--model", "cycle_gan",
-                
+                "--job_id", "1",
             ],
         }
     ]

@@ -29,7 +29,7 @@ from util.fid_score import InceptionV3, calculate_fretchet
 import torch
 import torchvision.transforms as transforms
 import random
-
+import math
 def train(model, dataset_training, dataset_eval, inception_model, opt, logger):
     
     total_iters = 0                # the total number of training iterations
@@ -113,15 +113,50 @@ def eval(model, dataset_eval, inception_model, opt, logger):
 if __name__ == '__main__':
 
     log = True
-
     opt = TrainOptions().parse()   # get training options
+    
+    if opt.job_id != -1:
+        # TODO change the test image to be equal to crop size instead of load_size
+        opt.load_size = random.choices([512, 256])[0]
+        opt.crop_size = random.choices([128, 64])[0]
+        opt.serial_batches = False
+        opt.preprocess = "resize_and_crop"
+        opt.netG = random.choices(["resnet_9blocks", "resnet_6blocks", "unet_128", "unet_256"])[0]
+        if opt.netG in ["resnet_9blocks", "resnet_6blocks"]:
+            opt.n_downsampling = random.choices([2,3,4])[0]
+        elif opt.netG == "unet_128":
+            opt.crop_size = 128
+            crop_log = int(math.log2(opt.crop_size))
+            opt.n_downsampling = random.choices([crop_log, crop_log-1, crop_log-2])[0]
+        elif opt.netG == "unet_256":
+            opt.crop_size = 256
+            crop_log = int(math.log2(opt.crop_size))
+            opt.n_downsampling = random.choices([crop_log, crop_log-1, crop_log-2])[0]
+
+        #opt.netD = random.choices(['n_layers'])[0]
+        #opt.n_layers_D = random.choices([4])[0]
+        opt.batch_size = random.choices([1])[0]
+        #opt.init_gain = random.choices([0.002, 0.01,0.02])[0]
+        # opt.ngf = random.choices([64])[0]
+        # opt.ndf = random.choices([32])[0]
+        opt.lambda_identity = random.choices([0.25,0.5,1])[0]
+        opt.lambda_A = random.choices([5,10,15])[0]
+        opt.lambda_B = random.choices([5,10,15])[0]
+        
+
+    
+    
+    
+    
+    
     dataset_training = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     print('The number of training images = %d' % len(dataset_training))
 
     model = create_model(opt)      # create a model given opt.model and other options
 
     # create a validation dataset given opt.dataset_mode and other options
-    
+    opt.name = opt.name + "_" + opt.model+  "_" + opt.netG + "_" + opt.netD + "_" + str(opt.n_layers_D) + "_" + str(opt.load_size) +"_" + str(opt.crop_size)+ "_" + opt.preprocess
+
     opt.phase = 'val'
     dataset_eval = create_dataset(opt)      # create a dataset for evaluations
     opt.num_test = len(dataset_eval)

@@ -56,9 +56,19 @@ class UnalignedDataset(BaseDataset):
         B_path = self.B_paths[index_B]
         A_img = Image.open(A_path).convert('RGB')
         B_img = Image.open(B_path).convert('RGB')
-        # apply image transformation
-        A = self.transform_A(A_img)
-        B = self.transform_B(B_img)
+        
+        if self.opt.phase != "train":
+            tmp_preprocess = self.opt.preprocess
+            self.opt.preprocess = self.opt.preprocess_test
+            # apply image transformation
+            A = self.transform_A(A_img)
+            B = self.transform_B(B_img)
+            self.opt.preprocess = tmp_preprocess
+
+        else:        
+            # apply image transformation
+            A = self.transform_A(A_img)
+            B = self.transform_B(B_img)
 
         return {'A': A, 'B': B, 'A_paths': A_path, 'B_paths': B_path}
 
